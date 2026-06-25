@@ -1,11 +1,13 @@
-# Use a lightweight Python image
 FROM python:3.11-slim
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy our app code into the container
+# Install Flask directly inside the container image
+RUN pip install flask
+
 COPY app.py .
 
-# Run the application when the container starts
+# Expose port 5000 so the outside world can map to it
+EXPOSE 5000
+
 CMD ["python", "app.py"]

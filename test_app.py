@@ -1,6 +1,14 @@
-import app
+import pytest
+from app import app as flask_app
 
-def test_main(capsys):
-    app.main()
-    captured = capsys.readouterr()
-    assert "Hello, World!" in captured.out
+@pytest.fixture
+def client():
+    flask_app.config['TESTING'] = True
+    with flask_app.test_client() as client:
+        yield client
+
+def test_home_page(client):
+    """Test that the homepage returns a 200 OK status and correct text"""
+    response = client.get('/')
+    assert response.status_code == 200
+    assert b"Hello, DevOps World!" in response.data

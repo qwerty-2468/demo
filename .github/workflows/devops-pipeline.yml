@@ -73,14 +73,16 @@ jobs:
       # 3. Tell the VM to restart its Docker container with the new image
       - name: Deploy to Compute Engine Instance
         run: |
-          # Update the startup metadata with the execution script
+          gcloud config set project qwerty-devops-project-123
+
+          # Using a multi-line heredoc string to safely format the script
           gcloud compute instances add-metadata devops-free-vm \
             --zone=us-central1-a \
-            --metadata=startup-script="#!/bin/bash
-              docker stop \$(docker ps -a -q) || true
-              docker rm \$(docker ps -a -q) || true
-              docker rmi \$(docker images -q) || true
-              docker run -d -p 80:80 ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest"
+            --metadata=startup-script=$'#!/bin/bash
+              docker stop $(docker ps -a -q) || true
+              docker rm $(docker ps -a -q) || true
+              docker rmi $(docker images -q) || true
+              docker run -d -p 80:80 '${{ secrets.DOCKERHUB_USERNAME }}'/devops-demo:latest'
 
-          # Safely reset the virtual instance to force-trigger the fresh script on boot
+          # Reset the server to execute the clean script
           gcloud compute instances reset devops-free-vm --zone=us-central1-a

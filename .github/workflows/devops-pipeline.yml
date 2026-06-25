@@ -70,19 +70,42 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      # 3. Tell the VM to restart its Docker container with the new image
+      # 3. Tell the VM to set up an Nginx proxy for the raw IP address
       - name: Deploy to Compute Engine Instance
         run: |
           gcloud config set project qwerty-devops-project-123
 
-          # Using a multi-line heredoc string to safely format the script
           gcloud compute instances add-metadata devops-free-vm \
             --zone=us-central1-a \
-            --metadata=startup-script=$'#!/bin/bash
-              docker stop $(docker ps -a -q) || true
-              docker rm $(docker ps -a -q) || true
-              docker rmi $(docker images -q) || true
-              docker run -d -p 80:80 '${{ secrets.DOCKERHUB_USERNAME }}'/devops-demo:latest'
+            --metadata=startup-script="#!/bin/bash
+              # 1. Update system and install Nginx and Docker
+              sudo apt-get update -y
+              sudo apt-get install -y nginx docker.io
+              
+              # 2. Configure Nginx to accept ANY incoming connection on Port 80 (including the raw IP)
+              sudo cat << 'EOF' > /etc/nginx/sites-available/default
+              server {
+                  listen 80 default_server; # <-- default_server tells Nginx to catch everything
+                  listen [::]:80 default_server;
+                  server_name _; # <-- The underscore means catch any domain name or raw IP
 
-          # Reset the server to execute the clean script
+                  location / {
+                      proxy_pass http://localhost:5000; # Pass it locally to our Python app container
+                      proxy_set_header Host \$host;
+                      proxy_set_header X-Real-IP \$remote_addr;
+                      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  }
+              }
+              EOF
+              
+              # 3. Restart Nginx to apply the configuration change
+              sudo systemctl restart nginx
+
+              # 4. Refresh and run the Docker application on internal port 5000
+              docker stop \$(docker ps -a -q) || true
+              docker rm \$(docker ps -a -q) || true
+              docker rmi \$(docker images -q) || true
+              docker run -d -p 5000:5000 ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest"
+
+          # Reset the server to flush the old setup and apply the new proxy configuration
           gcloud compute instances reset devops-free-vm --zone=us-central1-a

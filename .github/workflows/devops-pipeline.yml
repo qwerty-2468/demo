@@ -1,0 +1,40 @@
+name: DevOps CI/CD Pipeline
+
+# 1. Trigger the workflow every time code is pushed to the main branch
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  # Job 1: Test the code
+  test:
+    runs-on: ubuntu-latest # Running on a free Linux machine hosted by GitHub
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4 # Copies your repository code to the runner
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-node-version: '3.11'
+
+    - name: Install Dependencies
+      run: |
+        pip install pytest
+
+    - name: Run Tests
+      run: |
+        pytest test_app.py
+
+  # Job 2: Build the Docker Image (only runs if tests pass)
+  build-docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Build Docker Image
+      run: |
+        docker build -t devops-demo:latest .
+        echo "Docker image built successfully!"

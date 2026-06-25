@@ -51,3 +51,36 @@ jobs:
           context: .
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest
+
+  # Job 3: Deploy to Google Cloud Compute Engine
+  deploy-gcp:
+    needs: build-docker # Only run if the Docker build finishes successfully
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Authenticate with Google Cloud using your secret key
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # 2. Setup Google Cloud CLI tools inside the runner
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # 3. Tell the VM to restart its Docker container with the new image
+      - name: Deploy to Compute Engine Instance
+        run: |
+          gcloud compute instances add-metadata devops-free-vm \
+            --zone=us-central1-a \
+            --metadata=startup-script="#!/bin/bash
+              docker stop \$(docker ps -a -q)
+              docker rm \$(docker ps -a -q)
+              docker rmi \$(docker images -q)
+              docker run -d -p 80:80 ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest"
+
+          # Force the instance to rerun the updated startup script immediately
+          gcloud compute instances rerunning-startup-script devops-free-vm --zone=us-central1-a || \
+          gcloud compute instances reset devops-free-vm --zone=us-central1-a

@@ -8,4 +8,4 @@ def home():
 
 if __name__ == "__main__":
     # Tells the app to listen on all interfaces (0.0.0.0) on Port 5000
-    app.run(host="0.0.0.0", port=80)
+    app.run(host="0.0.0.0", port=5000)

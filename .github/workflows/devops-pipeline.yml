@@ -76,12 +76,15 @@ jobs:
         run: |
           gcloud compute instances add-metadata devops-free-vm \
             --zone=us-central1-a \
-            --metadata=startup-script="#!/bin/bash
-              docker stop \$(docker ps -a -q)
-              docker rm \$(docker ps -a -q)
-              docker rmi \$(docker images -q)
-              docker run -d -p 80:80 ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest"
+            --metadata=startup-script="$(cat <<'EOF'
+          #!/bin/bash
+          set -e
+          docker stop flask-dashboard-app >/dev/null 2>&1 || true
+          docker rm flask-dashboard-app >/dev/null 2>&1 || true
+          docker rmi ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest >/dev/null 2>&1 || true
+          docker run -d --restart=always --name flask-dashboard-app -p 5001:5000 ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest
+          EOF
+          )"
 
           # Force the instance to rerun the updated startup script immediately
-          gcloud compute instances rerunning-startup-script devops-free-vm --zone=us-central1-a || \
-          gcloud compute instances reset devops-free-vm --zone=us-central1-a
+          gcloud compute instances rerunning-startup-script devops-free-vm --zone=us-central1-a

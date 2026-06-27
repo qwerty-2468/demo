@@ -71,20 +71,34 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      # 3. Tell the VM to restart its Docker container with the new image
+      # 3. Securely SSH into the machine to hot-swap the app container
       - name: Deploy to Compute Engine Instance
         run: |
-          gcloud compute instances add-metadata devops-free-vm \
-            --zone=us-central1-a \
-            --metadata=startup-script="$(cat <<'EOF'
-          #!/bin/bash
-          set -e
-          docker stop flask-dashboard-app >/dev/null 2>&1 || true
-          docker rm flask-dashboard-app >/dev/null 2>&1 || true
-          docker rmi ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest >/dev/null 2>&1 || true
-          docker run -d --restart=always --name flask-dashboard-app -p 5001:5000 ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest
-          EOF
-          )"
+          # Guarantee the CLI is scoped to your project space
+          gcloud config set project qwerty-devops-project-123
 
-          # Force the instance to rerun the updated startup script immediately
-          gcloud compute instances rerunning-startup-script devops-free-vm --zone=us-central1-a
+          # Execute commands directly on the host operating system over a live SSH channel
+          gcloud compute ssh devops-free-vm \
+            --zone=us-central1-a \
+            --quiet \
+            --command="
+              set -e
+              echo '1. Stopping existing app container...'
+              sudo docker stop flask-dashboard-app >/dev/null 2>&1 || true
+              sudo docker rm flask-dashboard-app >/dev/null 2>&1 || true
+              
+              echo '2. Removing stale local image caches...'
+              sudo docker rmi ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest >/dev/null 2>&1 || true
+              
+              echo '3. Fetching updated container build from registry...'
+              sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest
+              
+              echo '4. Launching production instance target...'
+              sudo docker run -d \
+                --restart=always \
+                --name flask-dashboard-app \
+                -p 5001:5000 \
+                ${{ secrets.DOCKERHUB_USERNAME }}/devops-demo:latest
+              
+              echo '🎉 Application hot-swapped successfully!'
+            "

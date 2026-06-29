@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-app-deployment
+  labels:
+    app: flask-dashboard
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flask-dashboard
+  template:
+    metadata:
+      labels:
+        app: flask-dashboard
+    spec:
+      containers:
+        - name: flask-app
+          image: qwerty-2468/devops-demo:latest
+          ports:
+            - containerPort: 5000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-app-service
+spec:
+  type: ClusterIP # Kept internal because Ingress will act as the public gateway
+  selector:
+    app: flask-dashboard
+  ports:
+    - port: 80
+      targetPort: 5000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: flask-app-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: flask-app-service
+                port:
+                  number: 80

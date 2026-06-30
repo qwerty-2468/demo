@@ -1,0 +1,222 @@
+---
+- name: Idempotent 7GB Local DevOps Stack Manager (Tunnel Mode)
+  hosts: local_computer
+  tasks:
+    - name: 1. Ensure Minikube binary is present
+      community.general.homebrew:
+        name: minikube
+        state: present
+
+    - name: 2. Check if Minikube is already running
+      shell: "minikube status"
+      register: minikube_status
+      failed_when: false
+      changed_when: false
+
+    - name: 3. Start Minikube (Only if stopped/missing - Configured for 7GB RAM)
+      shell: "minikube start --driver=docker --cpus=4 --memory=7168"
+      when: "'Running' not in minikube_status.stdout"
+
+    - name: 4. Check existing namespaces
+      shell: "minikube kubectl -- get namespaces"
+      register: existing_namespaces
+      changed_when: false
+
+    - name: 5. Create ArgoCD namespace if missing
+      shell: "minikube kubectl -- create namespace argocd"
+      when: "'argocd' not in existing_namespaces.stdout"
+
+    - name: 6. Create Jenkins namespace if missing
+      shell: "minikube kubectl -- create namespace jenkins"
+      when: "'jenkins' not in existing_namespaces.stdout"
+
+    - name: 6b. Create isolated namespace for GitLab
+      shell: "minikube kubectl -- create namespace gitlab"
+      when: "'gitlab' not in existing_namespaces.stdout"
+
+    - name: 7. Apply ArgoCD manifests safely via Server-Side Apply
+      shell: "minikube kubectl -- apply --server-side=true -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"
+      when: "'argocd' not in existing_namespaces.stdout"
+
+    # FIXED: Replaced the broken URL with a native Jenkins LTS manifest deployment configuration block
+    - name: 8. Deploy Jenkins LTS Instance safely (With Docker Socket Access)
+      shell: |
+        minikube kubectl -- apply -n jenkins -f - <<EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: jenkins-server
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: jenkins-server
+          template:
+            metadata:
+              labels:
+                app: jenkins-server
+            spec:
+              securityContext:
+                runAsUser: 0 # Runs container as root to allow socket interaction
+              containers:
+              - name: jenkins
+                image: jenkins/jenkins:lts
+                ports:
+                - containerPort: 8080
+                - containerPort: 50000
+                volumeMounts:
+                - name: docker-socket
+                  mountPath: /var/run/docker.sock
+                - name: docker-binary
+                  mountPath: /usr/bin/docker
+              volumes:
+              - name: docker-socket
+                hostPath:
+                  path: /var/run/docker.sock
+              - name: docker-binary
+                hostPath:
+                  path: /usr/bin/docker
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: jenkins-service
+        spec:
+          type: ClusterIP
+          selector:
+            app: jenkins-server
+          ports:
+          - port: 8080
+            targetPort: 8080
+        EOF
+      when: "'jenkins' not in existing_namespaces.stdout"
+
+    - name: 8b. Deploy Optimized Lightweight GitLab CE Instance
+      shell: |
+        minikube kubectl -- apply -n gitlab -f - <<EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: gitlab-server
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: gitlab-server
+          template:
+            metadata:
+              labels:
+                app: gitlab-server
+            spec:
+              containers:
+              - name: gitlab
+                image: gitlab/gitlab-ce:latest
+                ports:
+                - containerPort: 80
+                env:
+                # CRITICAL TUNING: Forces GitLab to run inside your 7GB cluster boundaries
+                - name: GITLAB_OMNIBUS_CONFIG
+                  value: |
+                    puma['worker_processes'] = 0
+                    sidekiq['max_concurrency'] = 5
+                    postgresql['shared_buffers'] = '256MB'
+                    gitaly['configuration'] = { concurrency: [{ 'rpc' => '/gitaly.SmartHTTP/PostReceivePack', 'max_per_repo' => 3 }] }
+                resources:
+                  requests:
+                    memory: "2048Mi"
+                    cpu: "1"
+                  limits:
+                    memory: "3584Mi"
+                    cpu: "2"
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: gitlab-service
+        spec:
+          type: ClusterIP
+          selector:
+            app: gitlab-server
+          ports:
+          - port: 80
+            targetPort: 80
+        EOF
+      when: "'gitlab' not in existing_namespaces.stdout"
+
+    - name: 9. Wait for ArgoCD server to be ready
+      shell: "minikube kubectl -- get pods -n argocd -l app.kubernetes.io/name=argocd-server"
+      register: argocd_status
+      until: "'1/1' in argocd_status.stdout and 'Running' in argocd_status.stdout"
+      retries: 20
+      delay: 5
+      changed_when: false
+
+    - name: 10b. Wait for GitLab server pod to initialize
+      shell: "minikube kubectl -- get pods -n gitlab -l app=gitlab-server"
+      register: gitlab_status
+      until: "'1/1' in gitlab_status.stdout and 'Running' in gitlab_status.stdout"
+      retries: 40
+      delay: 5
+      changed_when: false
+
+    - name: 10. Scan for active background process bridges
+      shell: "ps aux | grep -E 'port-forward|minikube tunnel'"
+      register: active_bridges
+      changed_when: false
+
+    - name: 11. Expose ArgoCD Web UI (Only if port 8080 is not bridged)
+      shell: "nohup minikube kubectl -- port-forward svc/argocd-server -n argocd 8080:443 > /dev/null 2>&1 &"
+      async: 10
+      poll: 0
+      when: "'svc/argocd-server' not in active_bridges.stdout"
+
+    - name: 9. Wait for Jenkins server pod to be completely Ready
+      shell: "minikube kubectl -- get pods -n jenkins -l app=jenkins-server"
+      register: jenkins_status
+      until: "'1/1' in jenkins_status.stdout and 'Running' in jenkins_status.stdout"
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: 10. Expose Jenkins Web UI (Only if port 8082 is not bridged)
+      shell: "nohup minikube kubectl -- port-forward svc/jenkins-service -n jenkins 8082:8080 > /dev/null 2>&1 &"
+      async: 10
+      poll: 0
+      when: "'svc/jenkins-service' not in active_bridges.stdout"
+
+    - name: 13b. Expose GitLab Web UI (Only if port 8084 is not bridged)
+      shell: "nohup minikube kubectl -- port-forward svc/gitlab-service -n gitlab 8084:80 > /dev/null 2>&1 &"
+      async: 10
+      poll: 0
+      when: "'svc/gitlab-service' not in active_bridges.stdout"
+
+    - name: 13. Spin up native Minikube Tunnel network bridge
+      shell: "nohup minikube tunnel > /dev/null 2>&1 &"
+      async: 10
+      poll: 0
+      when: "'minikube tunnel' not in active_bridges.stdout"
+
+    - name: 14. Fetch the auto-generated ArgoCD Admin Password
+      shell: "minikube kubectl -- -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
+      register: argocd_password
+      changed_when: false
+
+    - name: 16. Extract the initial Jenkins Admin Unlock Key
+      shell: "minikube kubectl -- exec deployment/jenkins-server -n jenkins -- cat /var/jenkins_home/secrets/initialAdminPassword"
+      register: jenkins_password
+      failed_when: false # <-- NEW: Prevents crashing if setup is already complete
+      changed_when: false
+
+    - name: 17. Extract the initial GitLab Admin Root Password
+      shell: "minikube kubectl -- exec deployment/gitlab-server -n gitlab -- cat /etc/gitlab/initial_root_password | grep 'Password:' | awk '{print $2}'"
+      register: gitlab_password
+      failed_when: false
+      changed_when: false
+
+    - name: 🌟 Active Workspace Access Points
+      debug:
+        msg:
+          - "ArgoCD Portal URL: https://localhost:8080 (User: admin / Pass: {{ argocd_password.stdout }})"
+          - "Jenkins Portal URL: http://localhost:8082 (Unlock Key: {{ jenkins_password.stdout | default('Already Configured/Setup Complete') }})"
+          - "GitLab Portal URL: http://localhost:8084 (User: root / Pass: {{ gitlab_password.stdout | default('Already Configured/Setup Complete') }})"
+          - "Flask Web App URL: http://localhost (Exposed cleanly via Tunnel)"

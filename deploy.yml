@@ -1,0 +1,91 @@
+---
+- name: Production Deployment and Configuration Management
+  hosts: webservers
+  become: yes # Execute all system tasks as root (sudo)
+
+  tasks:
+    - name: 1. Ensure system cache is updated
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: 2. Install core package dependencies
+      apt:
+        name:
+          - nginx
+          - docker.io
+        state: present
+
+    - name: 3. Create clean Nginx reverse proxy configuration
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              server_name _;
+
+              location / {
+                  proxy_pass http://localhost:5001;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+          }
+      notify: Restart Nginx
+
+    - name: 4. Ensure Nginx and Docker service daemons are running
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - nginx
+        - docker
+
+    - name: 5. Pull and run your application container from Docker Hub
+      docker_container:
+        name: flask-dashboard-app
+        image: "boci2468/devops-demo:latest" # <-- Replace with your real Docker Hub target
+        state: started
+        restart_policy: always
+        published_ports:
+          - "5001:5000" # <-- Map container port 5000 to host port 5001
+
+    - name: A1. Ensure the persistent disk is formatted to ext4 filesystem
+      filesystem:
+        fstype: ext4
+        dev: /dev/disk/by-id/google-jenkins-data
+
+    - name: A2. Create a permanent directory mount point on the host filesystem
+      file:
+        path: /mnt/jenkins_persistent
+        state: directory
+        mode: "0755"
+
+    - name: A3. Securely mount the disk to the directory path
+      mount:
+        path: /mnt/jenkins_persistent
+        src: /dev/disk/by-id/google-jenkins-data
+        fstype: ext4
+        state: mounted
+
+    # Update your original Jenkins Docker task to target the new disk directory path
+    - name: A4. Run Jenkins pointing to the persistent storage directory
+      docker_container:
+        name: my-jenkins-server
+        image: jenkins/jenkins:lts
+        state: started
+        restart_policy: always
+        user: "root"
+        published_ports:
+          - "8080:8080"
+          - "50000:50000"
+        volumes:
+          - /mnt/jenkins_persistent:/var/jenkins_home # <-- Configs now write to the real disk!
+          - /var/run/docker.sock:/var/run/docker.sock
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted

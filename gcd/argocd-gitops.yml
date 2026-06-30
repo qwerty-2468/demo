@@ -1,0 +1,59 @@
+---
+- name: Provision Lightweight Kubernetes and ArgoCD on GCP
+  hosts: gcp_nodes
+  become: true
+  tasks:
+    - name: 1. Check if swap file exists
+      stat:
+        path: /swapfile
+      register: swap_file_check
+
+    - name: 2. Create and enable 2GB Linux Swap File for RAM relief
+      shell: |
+        fallocate -l 2G /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      when: not swap_file_check.stat.exists
+
+    - name: 3. Download and Install Lightweight K3s (Skipping Traefik)
+      shell: "curl -sfL https://get.k3s.io | sh -s - --disable traefik"
+      environment:
+        INSTALL_K3S_EXEC: "server"
+
+    - name: 4. Wait for K3s node assembly to become Ready
+      shell: "kubectl get nodes"
+      register: k3s_nodes
+      until: "'Ready' in k3s_nodes.stdout"
+      retries: 10
+      delay: 5
+
+    - name: 5. Create isolated cluster namespace for ArgoCD
+      shell: "kubectl create namespace argocd"
+      register: namespace_creation
+      failed_when: false # Don't crash if the namespace already exists
+
+    - name: 6. Apply official ArgoCD installation manifests
+      shell: "kubectl apply --server-side=true -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"
+
+    - name: 7. Wait for ArgoCD server components to boot completely
+      shell: "kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server"
+      register: argocd_status
+      until: "'1/1' in argocd_status.stdout and 'Running' in argocd_status.stdout"
+      retries: 20
+      delay: 10
+
+    - name: 8. Expose ArgoCD Web UI Port via background port-forward
+      shell: "nohup kubectl port-forward svc/argocd-server -n argocd --address 0.0.0.0 8080:443 > /dev/null 2>&1 &"
+
+    - name: 9. Fetch and reveal the generated ArgoCD Admin Password
+      shell: "kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
+      register: argocd_password
+
+    - name: 🌟 Print Access Credentials
+      debug:
+        msg:
+          - "ArgoCD URL: http://{{ ansible_host }}:8080"
+          - "Username: admin"
+          - "Password: {{ argocd_password.stdout }}"
